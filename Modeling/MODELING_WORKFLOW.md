@@ -2,7 +2,7 @@
 
 > Dokumen ini menjelaskan **kenapa** pipeline `Modeling/main.ipynb` dibangun seperti sekarang — mulai dari temuan EDA sampai keputusan Stratified 5-Fold dan rasio split ~80:20 — bukan sekadar apa yang dikerjakan. Untuk detail hyperparameter dan riwayat eksperimen lengkap, lihat [PROGRESS_REPORT.md](../PROGRESS_REPORT.md).
 >
-> Catatan riwayat: versi dokumen ini pernah dibuat sebelumnya (commit `4f052ad`), tapi sempat hilang karena ter-revert (`b41097f`) sebelum sempat di-commit ulang. Isinya sekarang ditulis ulang mengikuti kondisi `main.ipynb` yang aktif saat ini (Stratified **5-Fold**, `MSELoss`, tanpa common-depth-grid interpolation).
+> Catatan riwayat: versi dokumen ini pernah dibuat sebelumnya (commit `4f052ad`), tapi sempat hilang karena ter-revert (`b41097f`) sebelum sempat di-commit ulang. Isinya sekarang ditulis ulang mengikuti kondisi `main.ipynb` yang aktif saat ini (Stratified **5-Fold** dengan constraint anti-clustering replikasi, `SmoothL1Loss` untuk training + `MSELoss` untuk validation/early-stopping, tanpa common-depth-grid interpolation). Lihat bagian 5.1 untuk perubahan split terbaru (Update 20).
 
 ## 1. Titik Berangkat: Apa yang Terlihat di EDA
 
@@ -41,9 +41,9 @@ Jadi keputusan pakai cross-validation itu sendiri adalah jawaban atas: *"satu sp
 
 `density` (4 kelas), `cutting_speed` (6 kelas), dan `feed_rate` (3 kelas) menghasilkan pengaruh yang sangat tidak seragam terhadap `cutting_force` — dari EDA, mean `cutting_force` naik dari ~35 (density=10) sampai ~378 (density=25), dan dari ~78 (speed=100) sampai ~262 (speed=10). Kalau fold dibentuk dengan K-Fold polos (tanpa stratifikasi), ada risiko nyata satu fold kebetulan didominasi kombinasi "ringan" dan fold lain didominasi kombinasi "berat" — RMSE antar-fold jadi tidak sebanding, dan kita tidak tahu apakah selisih itu karena model atau karena komposisi fold yang timpang.
 
-`StratifiedKFold` memastikan setiap fold punya proporsi kelas yang mirip, sehingga variasi RMSE antar-fold lebih mencerminkan variasi performa model, bukan variasi komposisi data.
+Stratifikasi memastikan setiap fold punya proporsi kelas yang mirip, sehingga variasi RMSE antar-fold lebih mencerminkan variasi performa model, bukan variasi komposisi data.
 
-Implementasi saat ini (`split_experiment_keys` di `main.ipynb`) menstratifikasi berdasarkan **`density` saja** (`strata = [key[0] for key in keys]`, 4 kelas) — bukan kombinasi penuh 3-arah (72 kelas) seperti versi sebelumnya. Ini bukan detail sepele — justru ini kunci kenapa jumlah fold bisa naik dari 2 ke 5 (lihat bagian 5).
+Implementasi saat ini (`split_experiment_keys` di `main.ipynb` dan `main_raw.ipynb`) menstratifikasi berdasarkan **`density` saja** (4 kelas) — bukan kombinasi penuh 3-arah (72 kelas) seperti versi sebelumnya. Ini bukan detail sepele — justru ini kunci kenapa jumlah fold bisa naik dari 2 ke 5 (lihat bagian 5). Sejak Update 20, mekanisme stratifikasinya tidak lagi memakai `sklearn.StratifiedKFold`, tapi fungsi kustom `_assign_folds_no_combo_clustering` yang stratifikasinya tetap dijaga sama ketatnya, plus satu constraint tambahan — detail lengkap di bagian 5.1.
 
 ## 5. Kenapa Stratified **5-Fold**, Bukan 2-Fold atau 10-Fold
 
@@ -55,7 +55,35 @@ Ini pertanyaan inti, dan jawabannya berubah seiring waktu — versi sebelumnya (
 - **Standar umum di literatur ML** — 5-fold adalah default yang menyeimbangkan bias estimasi performa (semakin banyak fold, semakin besar train set per fold, estimasi makin representatif) dengan variance estimasi (semakin sedikit fold, makin sedikit "sudut pandang" berbeda yang diuji).
 - **Biaya komputasi nyata.** Pipeline melatih 4 model (LSTM, GRU, RNN, TCN) dari nol di setiap fold, di CPU (Ryzen 7 5800U, tanpa GPU). 5-fold × 4 model = 20 proses training penuh per full run. 10-fold akan menggandakan biaya itu untuk manfaat marginal, mengingat jumlah eksperimen (198) sudah cukup besar relatif terhadap 5 fold (≈40 eksperimen test per fold — sampel test yang cukup untuk RMSE stabil).
 
-Trade-off dari 2-fold ke 5-fold: fold sekarang **tidak lagi menjamin semua 72 kombinasi 3-arah terwakili persis merata di tiap fold** (karena stratifikasi cuma pegang `density`), tapi sebagai gantinya setiap eksperimen mendapat kesempatan jauh lebih besar untuk benar-benar **dilatih** (bukan cuma jadi test/validation) — lihat Update 18 di progress report: sebelum fold validasi diperbaiki, 5 dari 198 eksperimen (termasuk kombinasi sulit `(20,10,10,1)`) tidak pernah masuk training di fold manapun. Ini murni bug coverage split (splitter validasi memakai `random_state` yang sama di tiap outer fold), sudah diperbaiki dengan memakai **dua `StratifiedKFold` independen**: satu untuk outer test (`random_state=split_seed`), satu lagi khusus keanggotaan validasi (`random_state=split_seed + 1`), dengan validation fold dirotasi `(test_fold + 1) % n_splits` supaya val dan test tidak pernah tumpang tindih dan setiap eksperimen matematis dijamin: tepat 1× test, maksimal 1× validation, sisanya (≥3 dari 5 fold) otomatis train.
+Trade-off dari 2-fold ke 5-fold: fold sekarang **tidak lagi menjamin semua 72 kombinasi 3-arah terwakili persis merata di tiap fold** (karena stratifikasi cuma pegang `density`), tapi sebagai gantinya setiap eksperimen mendapat kesempatan jauh lebih besar untuk benar-benar **dilatih** (bukan cuma jadi test/validation) — lihat Update 18 di progress report: sebelum fold validasi diperbaiki, 5 dari 198 eksperimen (termasuk kombinasi sulit `(20,10,10,1)`) tidak pernah masuk training di fold manapun. Ini murni bug coverage split (splitter validasi memakai `random_state` yang sama di tiap outer fold), sudah diperbaiki dengan memakai **dua assignment fold independen**: satu untuk outer test (seed `split_seed`), satu lagi khusus keanggotaan validasi (seed `split_seed + 1`), dengan validation fold dirotasi `(test_fold + 1) % n_splits` supaya val dan test tidak pernah tumpang tindih dan setiap eksperimen matematis dijamin: tepat 1× test, maksimal 1× validation, sisanya (≥3 dari 5 fold) otomatis train.
+
+### 5.1 Update 20 — Constraint Anti-Clustering Replikasi
+
+**Masalah yang ditemukan:** Stratifikasi `density`-saja mengontrol proporsi antar-fold di level `density`, tapi buta terhadap struktur di dalamnya — tiap `density` sebenarnya terdiri dari kombinasi 3-arah `(density, cutting_speed, feed_rate)` yang masing-masing punya 2–3 replikasi (eksperimen berulang dengan parameter identik). `StratifiedKFold` bawaan sklearn tidak tahu soal replikasi ini, jadi murni kebetulan kalau dua replikasi dari kombinasi yang sama jatuh ke fold yang sama.
+
+Ini benar-benar terjadi: pada full training pertama dengan skema lama (Update 19), 2 dari 3 replikasi kombinasi tersulit `(density=20, speed=10, feed=10)` — yang sejak awal EDA sudah diketahui punya `replicate_std_cf` tertinggi dari 72 kombinasi (~23,5) — kebetulan jatuh bareng di test fold yang sama (Fold 3). Fold itu jadi jauh lebih berat daripada fold lain untuk semua model, terutama LSTM (RMSE dua eksperimen itu sampai 56,71 dan 38,58, jauh di atas eksperimen lain yang umumnya di bawah 15).
+
+**Perbaikan:** `split_experiment_keys` ditulis ulang di `main.ipynb` dan `main_raw.ipynb`. Fungsi `_assign_folds_no_combo_clustering(keys, n_splits, seed)` menggantikan `sklearn.StratifiedKFold` sepenuhnya (import-nya juga dihapus):
+
+1. Eksperimen dikelompokkan per kombinasi 3-arah (`key[:3]`).
+2. Kombinasi diproses dalam urutan acak (di-seed). Untuk tiap kombinasi, dipilih sejumlah fold sebanyak jumlah replikasinya, diambil dari fold-fold yang **saat itu paling sedikit anggotanya** di dalam stratum `density` yang sama (tie-break acak kalau ada beberapa fold dengan jumlah anggota sama).
+3. Karena dipilih tanpa pengulangan dari 5 fold yang tersedia, dan jumlah replikasi maksimal cuma 3, replikasi dari kombinasi yang sama **matematis dijamin** tidak pernah dapat fold yang sama.
+4. Dipanggil dua kali dengan seed independen (`split_seed` untuk test, `split_seed + 1` untuk validation) — pola yang sama seperti Update 18, cuma mesin di baliknya beda.
+
+**Kenapa ini masih "stratified", bukan sesuatu yang lain:** keseimbangan per-`density` tetap dijaga eksplisit (fold dipilih dari yang paling sedikit anggotanya *di dalam stratum density yang sama*, bukan lintas density). Verifikasi pada seluruh 198 eksperimen (`split_seed=42`):
+
+| Density | Total | Fold 1 | Fold 2 | Fold 3 | Fold 4 | Fold 5 |
+|---|---:|---:|---:|---:|---:|---:|
+| 10 | 54 | 11 | 11 | 11 | 11 | 10 |
+| 15 | 54 | 11 | 11 | 11 | 10 | 11 |
+| 20 | 54 | 10 | 11 | 11 | 11 | 11 |
+| 25 | 36 | 7 | 7 | 7 | 7 | 8 |
+
+Selisih maksimal cuma 1 eksperimen per density per fold — proporsional sama persis seperti yang dijamin `StratifiedKFold`. Bedanya, sekarang **0 dari 72 kombinasi** yang replikasinya numpuk di test atau validation fold yang sama (sebelum Update 20, minimal 1 kombinasi bermasalah, yaitu `(20,10,10)`, dan itu sudah cukup untuk merusak keseluruhan fold). Istilah yang tepat buat menjelaskan ini: **stratified k-fold dengan constraint anti-clustering replikasi** — konsepnya dekat dengan `StratifiedGroupKFold` di scikit-learn (gabungan stratifikasi + kesadaran akan grup/replikasi), hanya arahnya kebalik: `StratifiedGroupKFold` menjaga satu grup tetap **utuh** di satu fold, sementara kebutuhan di sini adalah menyebar replikasi **menjauh** satu sama lain antar-fold.
+
+Jaminan dari Update 18 tetap utuh setelah perubahan ini: tiap eksperimen jadi test tepat 1×, dan train di minimal 3 dari 5 fold (166 eksperimen dapat 3 fold train, 32 dapat 4 fold train — dulu 162/36, hampir sama).
+
+**Dampak ke hasil:** Karena algoritma split berubah total, susunan eksperimen di tiap fold juga berubah menyeluruh — hasil RMSE dari Update 19 (`MSELoss`, split lama) tidak bisa dibandingkan langsung dengan hasil setelah Update 20 (`SmoothL1Loss`, split baru). Keduanya berubah bersamaan di update ini, jadi selisih hasil akhir mencerminkan gabungan efek loss function + split, bukan salah satu saja secara terisolasi — perlu diingat kalau nanti ingin mengklaim "penurunan RMSE karena SmoothL1" secara spesifik.
 
 ## 6. Kenapa Rasio ~80:20
 
@@ -87,11 +115,11 @@ Catatan jujur yang tetap perlu disebut: kelima outer fold *pernah* dilihat selam
 ```
 data.csv (283.140 baris)
   → separate_experiments()      : deteksi 198 eksperimen dari reset depth=0
-  → split_experiment_keys()     : Stratified 5-Fold (density) → per fold: 80% train-pool / 20% test
-                                   dalam 80% itu → StratifiedKFold kedua (offset+1) → ~64% inner-train / ~16% val
+  → split_experiment_keys()     : Stratified 5-Fold (density) + anti-clustering replikasi (Update 20) → per fold: 80% train-pool / 20% test
+                                   dalam 80% itu → assignment kedua (offset+1, anti-clustering juga) → ~64% inner-train / ~16% val
   → Pipeline.fit_transform()    : StandardScaler, fit HANYA pada inner-train
   → experiments_to_tensor()     : windowing per eksperimen (window & stride beda per model), tanpa lintas-eksperimen
-  → train()                     : MSELoss, Adam/AdamW, ReduceLROnPlateau, early stopping via inner-val
+  → train()                     : SmoothL1Loss (training) + MSELoss (validation/early-stopping), Adam/AdamW, ReduceLROnPlateau
   → evaluate() / evaluate_test_experiments() : prediksi di-inverse-transform, dihitung MAE/MSE/RMSE/R² di skala asli
   → diulang untuk test_fold = 0..4, lalu diagregasi (mean ± std RMSE per model)
 ```
@@ -110,3 +138,5 @@ Beberapa keputusan lain yang sering muncul berdampingan dengan pembahasan split,
 - Estimasi std dari 5 fold tetap lebih baik daripada 2 fold, tapi masih bukan sampel besar — baca sebagai indikasi kestabilan, bukan interval kepercayaan yang ketat.
 - Stratifikasi hanya berbasis `density` berarti proporsi `cutting_speed`/`feed_rate` antar-fold **tidak dijamin** identik, hanya cenderung mirip karena distribusinya cukup merata secara alami di tiap density.
 - TCN memakai konfigurasi awal yang belum melalui tuning seluas model recurrent — perbandingan RMSE antar-model perlu mempertimbangkan ini, bukan dibaca sebagai "arsitektur A pasti lebih baik dari B".
+
+> **Update 20:** Poin pertama di atas punya satu kasus konkret yang sudah diperbaiki — lihat bagian 5.1 untuk detail lengkap (masalah, mekanisme perbaikan, dan tabel verifikasi keseimbangan per-density).
