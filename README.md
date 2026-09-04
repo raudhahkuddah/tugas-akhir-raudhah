@@ -73,10 +73,9 @@ tugas-akhir-raudhah/
 │   ├── validation_plots_raw/
 │   ├── depth_extrapolation.ipynb
 │   ├── linear_baseline.ipynb
-│   ├── main copy.ipynb
 │   ├── main_raw.ipynb
 │   ├── main.ipynb
-│   └── MODELING_WORKFLOW.md
+│   
 │
 ├── .gitattributes
 ├── .gitignore
@@ -102,13 +101,11 @@ Contains the main modeling, evaluation, and visualization files.
 
 - `main.ipynb` — main sequential deep learning modeling workflow.
 - `main_raw.ipynb` — sequential deep learning modeling workflow using the raw dataset.
-- `main copy.ipynb` — copy of the main modeling notebook.
 - `linear_baseline.ipynb` — conventional machine learning baseline using Linear Regression and HistGradientBoostingRegressor.
 - `depth_extrapolation.ipynb` — depth extrapolation experiment comparing the implemented models.
 - `utils/` — utility scripts used in the modeling workflow.
 - `validation_plots/` — prediction visualization outputs for the processed dataset.
 - `validation_plots_raw/` — prediction visualization outputs for the raw dataset.
-- `MODELING_WORKFLOW.md` — documentation of the modeling workflow.
 
 ## 4. Methodology
 
